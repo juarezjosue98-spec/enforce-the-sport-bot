@@ -17,10 +17,7 @@ client.once('ready', () => {
 });
 
 client.on('messageCreate', async (message) => {
-  // Ignore bots
   if (message.author.bot) return;
-
-  // Only respond when the bot is mentioned
   if (!message.mentions.has(client.user)) return;
 
   const content = message.content.toLowerCase();
@@ -36,38 +33,39 @@ client.on('messageCreate', async (message) => {
     );
   }
 
-  // Acknowledge immediately so the user knows it's working
   const statusMsg = await message.reply(
     '🥊 Scraping the latest from BoxingNews24... one moment.'
   );
 
   try {
     // 1. Scrape freshest story
-    await statusMsg.edit('📰 Got the headlines — picking the freshest story...');
     const story = await scrapeLatestStory();
-
     await statusMsg.edit(
-      `✍️ Writing article on: **${story.headline}** — drafting now...`
+      `📰 Got it — writing on: **${story.headline}**`
     );
 
-    // 2. Generate article via Claude API
+    // 2. Generate article + Tapology links via Claude API
     const articleText = await generateArticle(story);
-
-    // 3. Build .docx
     await statusMsg.edit('📄 Building your .docx file...');
-    const docxBuffer = await buildDocx(articleText);
 
-    // 4. Post text preview (first ~1800 chars so Discord doesn't truncate)
-    const preview = articleText.fullText.slice(0, 1800) + '\n\n*...continued in the .docx file*';
+    // 3. Build .docx — use linkedText so hyperlinks are embedded in the doc
+    const docxBuffer = await buildDocx({
+      ...articleText,
+      fullText: articleText.linkedText || articleText.fullText,
+    });
+
+    // 4. Post plain text preview in Discord (strip HTML tags for readability)
+    const plainPreview = (articleText.linkedText || articleText.fullText)
+      .replace(/<a [^>]+>([^<]+)<\/a>/g, '$1') // strip <a> tags, keep text
+      .slice(0, 1800);
 
     await statusMsg.edit('✅ Done! Here\'s your article:');
 
-    // Text preview embed
     await message.channel.send({
-      content: `**${articleText.title}**\n*By ${articleText.byline}*\n\n${preview}`,
+      content: `**${articleText.title}**\n*By ${articleText.byline}*\n\n${plainPreview}\n\n*...continued in the .docx file*`,
     });
 
-    // .docx attachment
+    // 5. Upload .docx
     const safeTitle = articleText.title
       .replace(/[^a-z0-9 ]/gi, '')
       .trim()
