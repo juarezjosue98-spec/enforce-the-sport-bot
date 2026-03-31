@@ -1,4 +1,6 @@
 const Anthropic = require('@anthropic-ai/sdk');
+const axios = require('axios');
+const cheerio = require('cheerio');
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -11,14 +13,19 @@ STRICT FORMATTING RULES — follow these exactly:
 - The article should feel like an intelligent sports op-ed written by a human beat reporter
 - Tone: direct, confident, slightly opinionated — like a boxing writer who has been ringside for 15 years
 - Length: 6–9 paragraphs, each 3–6 sentences
+- NEVER use parentheses anywhere in the article — not for records, not for asides, not for clarifications. Find another way to work the information into the sentence naturally.
+- Always capitalize weight class and division names: Heavyweight, Lightweight, Super Welterweight, Welterweight, Junior Middleweight, Middleweight, Super Middleweight, Light Heavyweight, Cruiserweight, Featherweight, Super Featherweight, Bantamweight, Flyweight, etc. Also capitalize "the Division" when referring to a specific one.
 
 OUTPUT FORMAT — respond ONLY with valid JSON, no markdown, no extra text:
 {
   "title": "Compelling SEO headline (no colons, punchy, under 70 chars)",
   "byline": "Joshua Juarez",
-  "fullText": "Full essay text, paragraphs separated by double newline (\\n\\n). No headers. No bullets.",
-  "tags": "Comma-separated SEO tags: fighter names, event, division, promotion, year"
+  "fullText": "Full essay text, paragraphs separated by double newline (\\n\\n). No headers. No bullets. No parentheses.",
+  "tags": "Comma-separated SEO tags: fighter names, event, division, promotion, year",
+  "fighters": ["Full Name One", "Full Name Two"]
 }
+
+The "fighters" array must list every boxer mentioned in the article by their full name, in the order they first appear.
 
 HUMAN WRITING RULES — this is critical, follow every one:
 - Vary sentence length constantly. Mix short punchy sentences with longer analytical ones. Never write three sentences of similar length in a row.
@@ -33,31 +40,96 @@ HUMAN WRITING RULES — this is critical, follow every one:
 - Occasionally use a one-sentence paragraph for emphasis. Like this.
 - Write numbers under ten as words (three, six) and use numerals for 10 and above
 - Reference specific rounds, punches, and moments as if you watched the fight yourself
+- Fighter records go inline as natural sentence flow: "Fundora improved to 24 wins, one loss, and one draw" — never in parentheses
 
 CONTENT RULES:
 - Lead with the most important fact in sentence one — no throat-clearing
 - Build analytical context in the middle (history, what it means for the division)
 - End with what comes next and why it matters
 - Always name fighters with their full name on first reference
-- Include record (wins-losses-KOs) for main fighters if found in source material
+- Include record (wins-losses-KOs) for main fighters found in source material — written out in prose, never in parentheses
 - Paraphrase quotes — do not reproduce them verbatim
 
-ORIGINAL ANGLE RULES — this is what separates the article from every other outlet covering the same story:
-- Before writing, identify the ONE angle that other outlets are NOT taking. Not the obvious headline, not the surface result — the underlying story. Ask: what does this actually mean? What does it reveal about a fighter's career arc, the division's politics, a promoter's strategy, or the sport's direction?
+ORIGINAL ANGLE RULES — this is what separates the article from every other outlet:
+- Before writing, identify the ONE angle other outlets are NOT taking. Not the obvious headline — the underlying story. What does this reveal about a fighter's career arc, the division's politics, a promoter's strategy, or the sport's direction?
 - Examples of surface vs. original angles:
   SURFACE: "Fundora stops Thurman in six rounds"
   ORIGINAL: "Thurman's return exposed how quickly ring rust turns elite timing into a liability against pressure fighters"
   SURFACE: "Canelo wants a rematch"
   ORIGINAL: "Canelo's rematch demand is about legacy management, not competitive closure — and everyone knows it"
 - Every article must contain one paragraph with an argument the reader hasn't seen anywhere else that day. Non-negotiable.
-- Do NOT retell the story in sequence (round 1... round 2... round 3...). That's a recap, not an article. Pick the moment that mattered most and build outward from it.
-- Connect the story to something bigger — a pattern in the division, a fighter's career trajectory, a recurring problem in boxing promotion, a historical parallel. One meaningful connection per article.
-- The title must reflect the original angle, not the basic result. A reader should be able to tell this article has a point of view just from the headline.
-- If the source material is thin or mostly a quote story, dig into what the quote reveals about the fighter's mindset and what they're NOT saying — that's the real story.`;
+- Do NOT retell the story in sequence. Pick the moment that mattered most and build outward from it.
+- Connect the story to something bigger — a pattern in the Division, a career trajectory, a recurring problem in boxing promotion, a historical parallel.
+- The title must reflect the original angle, not the basic result.
+- If source material is thin, dig into what the quote reveals about the fighter's mindset and what they're NOT saying.`;
+
+/**
+ * Search Tapology for a fighter and return their profile URL.
+ * Returns null if not found.
+ */
+async function getTapologyUrl(fighterName) {
+  try {
+    const query = encodeURIComponent(fighterName);
+    const searchUrl = `https://www.tapology.com/search?term=${query}&model=fighters`;
+
+    const { data } = await axios.get(searchUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; BoxingBotScraper/1.0)' },
+      timeout: 8000,
+    });
+
+    const $ = cheerio.load(data);
+
+    // Tapology search results list fighters under .searchResult or similar
+    // First result link that contains /fightcenter/fighters/ is the match
+    let profileUrl = null;
+
+    $('a[href*="/fightcenter/fighters/"]').each((i, el) => {
+      if (!profileUrl) {
+        const href = $(el).attr('href');
+        if (href) {
+          profileUrl = href.startsWith('http')
+            ? href
+            : `https://www.tapology.com${href}`;
+        }
+      }
+    });
+
+    return profileUrl;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Takes article text and a list of fighters, returns text with
+ * the first mention of each fighter's full name wrapped in an HTML hyperlink.
+ */
+async function injectTapologyLinks(fullText, fighters) {
+  let linkedText = fullText;
+
+  for (const name of fighters) {
+    // Only replace the FIRST occurrence
+    if (!linkedText.includes(name)) continue;
+
+    const url = await getTapologyUrl(name);
+    if (!url) continue;
+
+    // Replace only the first occurrence using indexOf for precision
+    const idx = linkedText.indexOf(name);
+    if (idx === -1) continue;
+
+    linkedText =
+      linkedText.slice(0, idx) +
+      `<a href="${url}" target="_blank" rel="noopener noreferrer">${name}</a>` +
+      linkedText.slice(idx + name.length);
+  }
+
+  return linkedText;
+}
 
 /**
  * Takes a scraped story object and returns a structured article object.
- * { title, byline, fullText, tags }
+ * { title, byline, fullText, linkedText, tags }
  */
 async function generateArticle(story) {
   const userPrompt = `Here is the raw boxing news story. Write a full SEO article based on it.
@@ -69,10 +141,9 @@ PUBLISHED: ${story.publishedAt}
 RAW ARTICLE TEXT:
 ${story.fullText}
 
-Before writing, identify the original angle — what is the underlying story that other outlets are missing?
-Then write the article from that angle. Do NOT retell events in sequence.
-Output ONLY valid JSON with the fields title, byline, fullText, and tags.
-The writing must sound like a human beat reporter — varied sentences, natural rhythm, zero AI filler phrases.`;
+Before writing, identify the original angle — what is the underlying story other outlets are missing?
+Write the article from that angle. Do NOT retell events in sequence. No parentheses anywhere.
+Output ONLY valid JSON with fields: title, byline, fullText, tags, fighters.`;
 
   const response = await client.messages.create({
     model: 'claude-sonnet-4-20250514',
@@ -86,7 +157,6 @@ The writing must sound like a human beat reporter — varied sentences, natural 
     .map((b) => b.text)
     .join('');
 
-  // Strip any accidental markdown fences
   const clean = raw.replace(/```json|```/g, '').trim();
 
   let parsed;
@@ -95,6 +165,11 @@ The writing must sound like a human beat reporter — varied sentences, natural 
   } catch (e) {
     throw new Error(`Claude returned invalid JSON: ${clean.slice(0, 200)}`);
   }
+
+  // Inject Tapology hyperlinks into the article text
+  const fighters = parsed.fighters || [];
+  const linkedText = await injectTapologyLinks(parsed.fullText, fighters);
+  parsed.linkedText = linkedText;
 
   return parsed;
 }
