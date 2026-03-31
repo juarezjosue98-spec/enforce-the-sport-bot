@@ -1,13 +1,75 @@
-const { Document, Packer, Paragraph, TextRun, AlignmentType, HeadingLevel } = require('docx');
+const {
+  Document, Packer, Paragraph, TextRun, AlignmentType,
+  HeadingLevel, ExternalHyperlink,
+} = require('docx');
+
+/**
+ * Parses a paragraph string that may contain <a href="...">text</a> tags
+ * and returns an array of docx TextRun / ExternalHyperlink children.
+ */
+function parseInlineLinks(text) {
+  const children = [];
+  const linkRegex = /<a\s+[^>]*href="([^"]+)"[^>]*>([^<]+)<\/a>/g;
+  let lastIndex = 0;
+  let match;
+
+  while ((match = linkRegex.exec(text)) !== null) {
+    // Text before the link
+    if (match.index > lastIndex) {
+      children.push(
+        new TextRun({
+          text: text.slice(lastIndex, match.index),
+          font: 'Georgia',
+          size: 24,
+          color: '111111',
+        })
+      );
+    }
+
+    // The hyperlink itself
+    children.push(
+      new ExternalHyperlink({
+        link: match[1],
+        children: [
+          new TextRun({
+            text: match[2],
+            font: 'Georgia',
+            size: 24,
+            color: '1155CC',
+            underline: {},
+          }),
+        ],
+      })
+    );
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  // Remaining text after last link
+  if (lastIndex < text.length) {
+    children.push(
+      new TextRun({
+        text: text.slice(lastIndex),
+        font: 'Georgia',
+        size: 24,
+        color: '111111',
+      })
+    );
+  }
+
+  return children.length > 0
+    ? children
+    : [new TextRun({ text, font: 'Georgia', size: 24, color: '111111' })];
+}
 
 /**
  * Takes a structured article object { title, byline, fullText, tags }
  * and returns a Buffer containing the .docx file.
+ * fullText may contain <a href="..."> hyperlink tags.
  */
 async function buildDocx(article) {
   const { title, byline, fullText, tags } = article;
 
-  // Split fullText into individual paragraphs on double newline
   const paragraphs = fullText
     .split(/\n\n+/)
     .map((p) => p.trim())
@@ -47,18 +109,11 @@ async function buildDocx(article) {
     })
   );
 
-  // --- BODY PARAGRAPHS ---
+  // --- BODY PARAGRAPHS (with inline hyperlink support) ---
   for (const para of paragraphs) {
     children.push(
       new Paragraph({
-        children: [
-          new TextRun({
-            text: para,
-            font: 'Georgia',
-            size: 24,
-            color: '111111',
-          }),
-        ],
+        children: parseInlineLinks(para),
         alignment: AlignmentType.LEFT,
         spacing: { before: 0, after: 280, line: 360 },
       })
