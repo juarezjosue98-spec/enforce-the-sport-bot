@@ -157,15 +157,28 @@ Output ONLY valid JSON with fields: title, byline, fullText, tags, fighters.`;
     .map((b) => b.text)
     .join('');
 
-  const clean = raw.replace(/```json|```/g, '').trim();
+  // Strip markdown fences, then extract the JSON object
+  let clean = raw.replace(/```json|```/g, '').trim();
+
+  // Extract just the JSON object in case there's any preamble/postamble
+  const jsonMatch = clean.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) throw new Error(`No JSON object found in Claude response: ${clean.slice(0, 200)}`);
+  clean = jsonMatch[0];
 
   let parsed;
   try {
     parsed = JSON.parse(clean);
   } catch (e) {
-    throw new Error(`Claude returned invalid JSON: ${clean.slice(0, 200)}`);
+    // Attempt to repair unescaped newlines inside string values
+    const repaired = clean.replace(/("(?:fullText|title|byline|tags)":\s*")([\s\S]*?)("(?:,|\s*\}))/g, (match, open, content, close) => {
+      return open + content.replace(/\n/g, '\\n').replace(/\r/g, '') + close;
+    });
+    try {
+      parsed = JSON.parse(repaired);
+    } catch (e2) {
+      throw new Error(`Claude returned invalid JSON: ${clean.slice(0, 200)}`);
+    }
   }
-
   // Inject Tapology hyperlinks into the article text
   const fighters = parsed.fighters || [];
   const linkedText = await injectTapologyLinks(parsed.fullText, fighters);
