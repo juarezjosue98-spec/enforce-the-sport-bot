@@ -2,7 +2,6 @@ require('dotenv').config();
 const { Client, GatewayIntentBits, AttachmentBuilder } = require('discord.js');
 const { scrapeHeadlines, scrapeFullArticle } = require('./scraper');
 const { generateArticle } = require('./claude');
-const { humanizeText } = require('./humanize');
 
 const client = new Client({
   intents: [
@@ -12,7 +11,7 @@ const client = new Client({
   ],
 });
 
-// Store pending selections per user: { userId: [ {headline, url}, ... ] }
+// Store pending selections per user
 const pendingSelections = new Map();
 
 client.once('ready', () => {
@@ -39,28 +38,22 @@ client.on('messageCreate', async (message) => {
       );
 
       try {
-        // Fetch full article
         const story = await scrapeFullArticle(chosen.headline, chosen.url);
-        await statusMsg.edit('🧠 Running through humanizer...');
+        await statusMsg.edit('🧠 Generating article...');
 
-        // Generate via Claude
         const articleText = await generateArticle(story);
 
-        // Strip HTML for humanizer
-        const plainBody = (articleText.fullText || '')
+        // Strip HTML tags from body
+        const cleanBody = (articleText.fullText || '')
           .replace(/<a [^>]+>([^<]+)<\/a>/g, '$1')
           .replace(/<[^>]+>/g, '')
           .trim();
 
-        // Humanize
-        const humanizedBody = await humanizeText(plainBody);
-
-        // Build plain text output
         const fullPlainText = [
           articleText.title,
           `By ${articleText.byline}`,
           '',
-          humanizedBody,
+          cleanBody,
           '',
           `Tags: ${articleText.tags || ''}`,
         ].join('\n');
@@ -73,9 +66,9 @@ client.on('messageCreate', async (message) => {
 
         await statusMsg.edit('✅ Done!');
 
-        // Post in chunks
+        // Post in chunks so Discord doesn't cut it off
         const chunks = [];
-        const paragraphs = humanizedBody.split('\n\n');
+        const paragraphs = cleanBody.split('\n\n');
         let current = `**${articleText.title}**\n*By ${articleText.byline}*\n\n`;
 
         for (const para of paragraphs) {
@@ -92,7 +85,7 @@ client.on('messageCreate', async (message) => {
           await message.channel.send({ content: chunk });
         }
 
-        // .txt attachment
+        // .txt file attachment
         await message.channel.send({
           content: '📎 **Full article as .txt — copy into Google Docs:**',
           files: [
@@ -109,7 +102,6 @@ client.on('messageCreate', async (message) => {
 
       return;
     } else {
-      // Invalid number — remind them
       return message.reply(
         `Please reply with a number between 1 and ${headlines.length}.`
       );
@@ -132,15 +124,12 @@ client.on('messageCreate', async (message) => {
     );
   }
 
-  const statusMsg = await message.reply(
-    '🥊 Scraping the latest from BoxingNews24...'
-  );
+  const statusMsg = await message.reply('🥊 Scraping the latest from BoxingNews24...');
 
   try {
     const headlines = await scrapeHeadlines();
     pendingSelections.set(userId, headlines);
 
-    // Build numbered list
     const list = headlines
       .map((h, i) => `**${i + 1}.** ${h.headline}`)
       .join('\n');
